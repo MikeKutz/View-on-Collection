@@ -11,8 +11,8 @@ as
 
         p_vars( 'src_owner' )        := user;
         p_vars( 'src_table_name' )   := 'TE_TEMPLATES';
-        p_vars( 'schema' )           := '#OWNER#'; -- target owner
-        p_vars( 'view_name' )        := 'table_name';
+        p_vars( 'schema' )           := 'teplsql$sys'; -- target owner
+        p_vars( 'view_name' )        := 'test_v2c';
         p_vars( 'package_name' )     := 'pkg_name';
         
         return_variable := teplsql.process_build( p_vars, 'v2c' , $$PLSQL_UNIT, 'PACKAGE' );
@@ -39,8 +39,9 @@ $if false $then
     <%@ block( data-type ) %>varchar2(30)<%@ enblock %>
   <%@ enextends %>
   <%@ extends( plsql-type, rcd_t ) %>
-    <%@ block( record ) %><% teplsql.set_tab(1); %>(<% for curr in "Columns"( '${src_owner}', '${src_table_name}', '' ) loop %>
-<% teplsql.goto_tab(1); %><%= curr.comma_first || curr.column_name_rpad %>apex_collections.c001%type
+    <%@ block( record ) %><% teplsql.set_tab(1); %>(seq_id  int
+<% for curr in "Columns"( '${src_owner}', '${src_table_name}', '' ) loop %>
+<% teplsql.goto_tab(1); %>,<%= curr.column_name_rpad %>apex_collections.c001%type
 <% end loop; %>
 <% teplsql.goto_tab(1); %>)<%@ enblock %>
   <%@ enextends %>
@@ -70,27 +71,80 @@ end if;<%@ enblock %>
 for curr in common_apex_utils."Page Items"()
 loop
     apex_debug.message(  '..Item "%s" is for column "%s" format "%s" has the value "%s"', curr.item_name, curr.column_name, curr.format_mask, substr( v( curr.item_name ), 1, 128 ) );
-
+            
     case curr.column_name
-<% for c1 in "Columns"( '${src_owner}', '${src_table_name}', '' ) loop %>
-        when '<%= c1.column_name %>'
-            rcd.<%= c1.column_name %> := v( curr.item_name );
+<% for curr in "Columns"( '${src_owner}', '${src_table_name}', '' ) loop %>
+        when <% teplsql.set_tab(1); %>'<%= curr.column_name %>' then  -- VARCHAR2
+<% teplsql.goto_tab(1); %><%@ include( ${this}.return-variable-name ) %>.<%= curr.column_name_rpad %> := v( curr.item_name );
 <% end loop; %>
         else
             apex_debug.message( 'Column "%s" is not part of this view.', curr.column_name );
     end case;
 end loop;
-    <%@ enblock %>
+<%@ enblock %>
   <%@ enextends %>
   <%@ extends( procedure, 04_automaticdml ) %>
     <%@ block( name ) %>automaticdml<%@ enblock %>
+    <%@ block( decl ) %>rcd <%@ include( ${super.super}.plsql-type.rcd_t.name ) %>;
+col_list common_apex_utils.col_list_t;<%@ enblock %>
+    <%@ block( bdy ) %><%@ include( ${super.super}.procedure.02_assert_collection.name ) %>;
+
+rcd := <%@ include( ${super.super}.procedure.03_page2rcd.name ) %>;
+
+case APEX_APPLICATION.G_REQUEST
+    when 'CREATE' then
+        apex_debug.message('...Inserting');
+        <%@ include( ${super.super}.procedure.10_ins.name ) %>( rcd );
+
+        apex_debug.message('SEQ_ID="%s"', rcd.SEQ_ID);
+    when 'SAVE' then
+        apex_debug.message('...Updating SEQ_ID="%s"', rcd.seq_id );
+        <%@ include( ${super.super}.procedure.11_upd.name ) %>( rcd, col_list );
+    when 'DELETE' then
+        apex_debug.message('..Deleting EMP_ID="%s"', rcd.seq_id );
+        <%@ include( ${super.super}.procedure.12_del.name ) %>( rcd );
+    else
+        apex_debug.message('Invalid Request Type "%s"', APEX_APPLICATION.G_REQUEST );
+end case;<%@ enblock %>
   <%@ enextends %>
   <%@ extends( procedure, 05_multirow_dml ) %>
     <%@ block( name ) %>multirow_dml<%@ enblock %>
+    <%@ block( parameters ) %>
+    <% for curr in "Columns"( '${src_owner}', '${src_table_name}', '' ) loop %>
+       <%= curr.comma_first %>p_<%= curr.column_name_rpad %><% teplsql.set_tab(1); %>in varchar2
+    <% end loop; %>
+       ,p_col_list_csv<% teplsql.goto_tab(1); %>in varchar2 default null<%@ enblock %>
+    <%@ block( decl ) %>rcd     <%@ include( ${super.super}.plsql-type.rcd_t.name ) %>;
+col_list  common_apex_utils.col_list_t;<%@ enblock %>
+    <%@ block( bdy ) %>-- covert to record
+
+col_list := common_apex_utils.csv2colList( p_col_list_csv );
+
+if APEX_APPLICATION.g_request = 'MULTI_ROW_DELETE'
+then 
+    if v('APEX$ROW_SELECTOR') = 'X'
+    then
+del( rcd );
+    end if;
+else
+    case v('APEX$ROW_STATUS')
+        when 'C' then
+            ins( rcd );
+        when 'U' then
+            upd( rcd, col_list );
+        when 'D' then
+            del( rcd );
+        else
+            apex_debug.message( 'bad IG DML request "%s" and request is "%s"', v('APEX$ROW_STATUS'), APEX_APPLICATION.g_request );
+    end case;
+end if;
+
+-- save back
+<%@ enblock %>
   <%@ enextends %>
   <%@ extends( procedure, 10_ins ) %>
     <%@ block( name ) %>ins<%@ enblock %>
-    <%@ block( parameters ) %>rcd in <%@ include( ${super.super}.plsql-type.rcd_t.name ) %><%@ enblock %>
+    <%@ block( parameters ) %>rcd in out <%@ include( ${super.super}.plsql-type.rcd_t.name ) %><%@ enblock %>
     <%@ block( decl ) %>seq_id apex_collections.seq_id%type;<%@ enblock %>
 <%@ block( bdy ) %>seq_id := apex_collection.add_member(<% teplsql.set_tab(1); %>p_collection_name => <%@ include( ${super.super}.variable.g_collection_name.name ) %>\\\\n
 <% for curr in "Columns"( '${src_owner}', '${src_table_name}', '' ) loop %>
@@ -107,34 +161,34 @@ end loop;
 <% end loop; %>
 <% teplsql.goto_tab(1); %>);
 
-rcd.item_id := seq_id;<%@ enblock %>
+rcd.seq_id := seq_id;<%@ enblock %>
   <%@ enextends %>
   <%@ extends( procedure, 11_upd ) %>
     <%@ block( name ) %>upd<%@ enblock %>
-    <%@ block( parameters ) %>rcd in out <%@ include( ${super.super}.plsql-type.rcd_t.name ) %><%@ enblock %>
+    <%@ block( parameters ) %>rcd in out <%@ include( ${super.super}.plsql-type.rcd_t.name ) %>, col_list in common_apex_utils.col_list_t<%@ enblock %>
 <%@ block( bdy ) %>
 <% for curr in "Columns"( '${src_owner}', '${src_table_name}', '' ) loop %>
 -- Updating Collection Column C<%= lpad( curr.column_id, 3, '0' ) %> to <%= curr.column_name %>.
-if UPDATING( '<%= curr.column_name %>' ) or ( not UPDATING and (p_col_list.exists( '<%= curr.column_name %>' ) or p_col_list.count = 0))
+if UPDATING( '<%= curr.column_name %>' ) or ( not UPDATING and (col_list.exists( '<%= curr.column_name %>' ) or col_list.count = 0))
 then
     apex_collection.update_member_attribute(
                          p_collection_name  => <%@ include( ${super.super}.variable.g_collection_name.name ) %>\\\\n
-                        ,p_seq              => rcd.ITEM_ID
+                        ,p_seq              => rcd.seq_id
                         ,p_attr_number      => <%= curr.column_id %> -- VARCHAR2
-                        ,p_attr_value       => rcd.ITEM_DESC 
+                        ,p_attr_value       => rcd.<%= curr.column_name %> 
                     );
 end if;
 
 <% end loop; %>
 <%@ enblock %>
-
   <%@ enextends %>
+
   <%@ extends( procedure, 12_del ) %>
     <%@ block( name ) %>del<%@ enblock %>
     <%@ block( parameters ) %>rcd in out <%@ include( ${super.super}.plsql-type.rcd_t.name ) %><%@ enblock %>
     <%@ block( bdy ) %>apex_collection.delete_member(
     p_collection_name => <%@ include( ${super.super}.variable.g_collection_name.name ) %>\\\\n
-    ,p_seq => p_rcd.item_id
+    ,p_seq => rcd.seq_id
     );<%@ enblock %>
   <%@ enextends %>
 
